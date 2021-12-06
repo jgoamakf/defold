@@ -867,6 +867,8 @@
   (property visible-minimap? g/Bool (default false))
   (property visible-whitespace VisibleWhitespace (default :none))
 
+  (property input-method-temporary g/Num (default 0))
+
   (input completions g/Any)
   (input cursor-ranges r/CursorRanges)
   (input indent-type r/IndentType)
@@ -2409,21 +2411,37 @@
 
 (defn handle-input-method-changed! [view-node ^InputMethodEvent e]
   (let [x (.getCommitted e)]
-    (when-not (.isEmpty x)
-      (insert-text! view-node ({"≃" "~="} x x)))))
+    (if-not (.isEmpty x)
+      (insert-text! view-node ({"≃" "~="} x x))
+      (let [composed (.getComposed e)
+            joined (clojure.string/join "" (map (fn [c] (.getText c)) composed))
+            joined-length (count joined)
+            input-method-temporary (g/user-data view-node :input-method-temporary)]
+        (if (and (not (nil? input-method-temporary)) (< 0 input-method-temporary))
+          (dotimes [i input-method-temporary]
+            (delete! view-node :delete-before)))
+        (insert-text! view-node ({"≃" "~="} joined joined))
+        (g/user-data! view-node :input-method-temporary joined-length)))))
 
 (defn- setup-input-method-requests! [^Canvas canvas view-node]
-  (when (eutil/is-linux?)
     (doto canvas
       (.setInputMethodRequests
         (reify InputMethodRequests
-          (getTextLocation [_this _offset] Point2D/ZERO)
+          (getTextLocation [_this _offset] (let [cursor-repaint-info (g/user-data view-node :cursor-repaint-info)
+                                                 visible-cursors (:visible-cursors cursor-repaint-info)
+                                                 layout (:layout cursor-repaint-info)
+                                                 lines (:lines cursor-repaint-info)
+                                                 cursor-rect (data/cursor-rect layout lines (last visible-cursors))
+                                                 bounds (.getBoundsInLocal canvas)
+                                                 screenBounds (.localToScreen canvas bounds)]
+                                            (Point2D. (+ (.getMinX screenBounds) (:x cursor-rect))
+                                                      (+ (.getMinY screenBounds) (:y cursor-rect) (:h cursor-rect)))))
           (getLocationOffset [_this _x _y] 0)
           (cancelLatestCommittedText [_this] "")
           (getSelectedText [_this] "")))
       (.setOnInputMethodTextChanged
         (ui/event-handler e
-          (handle-input-method-changed! view-node e))))))
+          (handle-input-method-changed! view-node e)))))
 
 (defn- make-view! [graph parent resource-node opts]
   (let [^Tab tab (:tab opts)
